@@ -98,7 +98,19 @@ requireEvery(records, (record) => record.promptZh, /360px[\s\S]*768px[\s\S]*1440
 requireEvery(records, (record) => record.prompt, /WCAG AA[\s\S]*keyboard[\s\S]*prefers-reduced-motion|keyboard[\s\S]*prefers-reduced-motion[\s\S]*WCAG AA/i, "英文无障碍要求");
 requireEvery(records, (record) => record.promptZh, /WCAG AA[\s\S]*键盘[\s\S]*prefers-reduced-motion|键盘[\s\S]*prefers-reduced-motion[\s\S]*WCAG AA/i, "中文无障碍要求");
 
-const results = { english: report(records, "en"), chinese: report(records, "zh"), sourceCompared: false, sourceMismatches: 0 };
+const officialRecords = records.filter((record) => record.officialPrompt);
+const officialTranslations = records.filter((record) => record.officialPromptZh);
+const results = {
+  official: {
+    count: officialRecords.length,
+    translatedCount: officialTranslations.length,
+    ids: officialRecords.map((record) => record.id),
+  },
+  english: report(records, "en"),
+  chinese: report(records, "zh"),
+  sourceCompared: false,
+  sourceMismatches: 0,
+};
 try {
   const files = (await fs.readdir(sourceDir)).filter((name) => name.endsWith(".md"));
   if (files.length === 147) {
@@ -106,10 +118,21 @@ try {
     for (const file of files) {
       const raw = await fs.readFile(path.join(sourceDir, file), "utf8");
       const id = raw.match(/^id:\s+"([^"]+)"/m)?.[1];
-      sourcePrompts.set(id, { en: promptBlock(raw, "原创英文提示词"), zh: promptBlock(raw, "原创中文提示词") });
+      sourcePrompts.set(id, {
+        official: promptBlock(raw, "官网原文") || null,
+        officialZh: promptBlock(raw, "官方原文中文翻译") || null,
+        en: promptBlock(raw, "原创英文提示词"),
+        zh: promptBlock(raw, "原创中文提示词"),
+      });
     }
     results.sourceCompared = true;
-    results.sourceMismatches = records.filter((record) => sourcePrompts.get(record.id)?.en !== record.prompt || sourcePrompts.get(record.id)?.zh !== record.promptZh).length;
+    results.sourceMismatches = records.filter((record) => {
+      const source = sourcePrompts.get(record.id);
+      return source?.official !== record.officialPrompt
+        || source?.officialZh !== record.officialPromptZh
+        || source?.en !== record.prompt
+        || source?.zh !== record.promptZh;
+    }).length;
   }
 } catch (error) {
   if (error?.code !== "ENOENT") throw error;
@@ -124,4 +147,10 @@ for (const [language, metrics] of [["英文", results.english], ["中文", resul
   if (metrics.maxSimilarityPercent > 82) throw new Error(`${language}最大相似度仍过高：${metrics.maxSimilarityPercent}%`);
 }
 if (results.english.minChars < 2600 || results.chinese.minChars < 1000) throw new Error("存在过短提示词");
+if (!results.official.count) throw new Error("至少需要一个经用户提供并核对的官网原文样本");
+if (results.official.count !== results.official.translatedCount) throw new Error("官网原文与中文翻译数量不一致");
+const tripPlanner = records.find((record) => record.id === "ai-trip-planner");
+if (tripPlanner?.officialPrompt?.length !== 6398 || !tripPlanner.officialPrompt.includes("Wandor") || !tripPlanner.officialPromptZh?.includes("液态玻璃提示卡片")) {
+  throw new Error("AI Trip Planner 三层样本不完整或与已核对原文不一致");
+}
 if (results.sourceCompared && results.sourceMismatches) throw new Error(`Markdown 与前端数据错配 ${results.sourceMismatches} 项`);

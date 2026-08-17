@@ -13,7 +13,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const protocol = forwardedProtocol ?? (host.startsWith("localhost") || host.startsWith("127.0.0.1") ? "http" : "https");
   const socialImage = `${protocol}://${host}/og.png`;
   const title = "Prompt Atlas — 免费前端提示词库";
-  const description = "本地浏览、筛选和使用 147 个原创前端提示词。";
+  const description = "本地浏览 147 个免费前端项目，按官网原文、中文翻译和原创改写分层管理。";
   return {
     title,
     description,

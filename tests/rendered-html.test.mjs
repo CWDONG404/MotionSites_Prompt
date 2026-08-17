@@ -33,23 +33,37 @@ test("数据文件包含 147 个免费提示词", async () => {
   const previewUrls = [...data.matchAll(/^\s+"previewUrl":\s+"([^"]+)"/gm)];
   const imagePreviews = [...data.matchAll(/^\s+"previewType":\s+"image"/gm)];
   const videoPreviews = [...data.matchAll(/^\s+"previewType":\s+"video"/gm)];
+  const assignment = data.indexOf("= [", data.indexOf("export const promptData"));
+  const end = data.lastIndexOf("];");
+  const records = JSON.parse(data.slice(assignment + 2, end + 1));
+  const tripPlanner = records.find((record) => record.id === "ai-trip-planner");
   assert.equal(ids.length, 147);
   assert.equal(chinesePrompts.length, 147);
   assert.equal(previewUrls.length, 147);
   assert.equal(imagePreviews.length, 135);
   assert.equal(videoPreviews.length, 12);
+  assert.equal(records.filter((record) => record.officialPrompt).length, 1);
+  assert.equal(tripPlanner.officialPrompt.length, 6398);
+  assert.match(tripPlanner.officialPrompt, /Wandor — Where will you go next\?/);
+  assert.match(tripPlanner.officialPromptZh, /液态玻璃提示卡片/);
   assert.match(data, /"primaryGroup": "Sites"/);
   assert.match(data, /"primaryGroup": "Apps"/);
   assert.match(data, /"primaryGroup": "Sections"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 });
 
-test("详情支持中英切换、独立滚动和按当前语言复制", async () => {
+test("详情支持三层内容、本地导入、独立滚动和按当前层复制", async () => {
   const component = await readFile(new URL("../app/prompt-library.tsx", import.meta.url), "utf8");
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-  assert.match(component, /原创中文提示词/);
-  assert.match(component, /language === "zh" \? prompt\.promptZh : prompt\.prompt/);
-  assert.match(component, /已显示完整提示词/);
+  assert.match(component, /官网原文/);
+  assert.match(component, /中文翻译/);
+  assert.match(component, /原创改写/);
+  assert.match(component, /localStorage\.setItem\(localOfficialStorageKey/);
+  assert.match(component, /handleCopy\(activePromptKey, activePromptText\)/);
+  assert.match(component, /暂无可复制内容/);
+  assert.match(component, /已显示完整内容/);
   assert.match(styles, /\.prompt-scroll\s*\{[^}]*overflow-y:\s*auto/s);
   assert.match(styles, /\.prompt-scroll\.prompt-zh pre/);
+  assert.match(styles, /\.layer-switch/);
+  assert.match(styles, /\.official-import/);
 });

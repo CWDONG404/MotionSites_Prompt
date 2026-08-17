@@ -6,13 +6,34 @@ import {
   ChevronRight,
   Copy,
   ExternalLink,
+  FileText,
   ImageOff,
+  Languages,
+  PenLine,
   Search,
+  Save,
   Sparkles,
+  Trash2,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PromptRecord } from "./prompt-data";
+
+type PromptLayer = "official" | "translation" | "rewrite";
+type RewriteLanguage = "en" | "zh";
+type LocalOfficialPrompt = {
+  officialPrompt: string;
+  officialPromptZh: string;
+  savedAt: string;
+};
+
+const localOfficialStorageKey = "prompt-atlas:official-prompts:v1";
+
+const layerMeta: Record<PromptLayer, { eyebrow: string; title: string; end: string }> = {
+  official: { eyebrow: "OFFICIAL FULL PROMPT", title: "官网原文", end: "OFFICIAL SOURCE" },
+  translation: { eyebrow: "CHINESE TRANSLATION", title: "官方原文中文翻译", end: "中文翻译" },
+  rewrite: { eyebrow: "ORIGINAL EQUIVALENT", title: "原创改写", end: "ORIGINAL REWRITE" },
+};
 
 const sourceTabs = [
   "All",
@@ -160,16 +181,39 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
   const [sort, setSort] = useState<"title" | "category">("title");
   const [visibleCount, setVisibleCount] = useState(24);
   const [selected, setSelected] = useState<PromptRecord | null>(null);
-  const [promptLanguage, setPromptLanguage] = useState<"en" | "zh">("en");
+  const [promptLayer, setPromptLayer] = useState<PromptLayer>("official");
+  const [rewriteLanguage, setRewriteLanguage] = useState<RewriteLanguage>("en");
+  const [localOfficialPrompts, setLocalOfficialPrompts] = useState<Record<string, LocalOfficialPrompt>>({});
+  const [importOpen, setImportOpen] = useState(false);
+  const [importOfficial, setImportOfficial] = useState("");
+  const [importTranslation, setImportTranslation] = useState("");
   const [copyStatus, setCopyStatus] = useState<{ key: string; state: "success" | "error" } | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const promptScrollRef = useRef<HTMLDivElement>(null);
   const copyTimerRef = useRef<number | null>(null);
 
+  useEffect(() => {
+    let saved: Record<string, LocalOfficialPrompt> | null = null;
+    try {
+      const raw = window.localStorage.getItem(localOfficialStorageKey);
+      if (raw) saved = JSON.parse(raw);
+    } catch {
+      // 无效的本地缓存不会阻塞资料库；用户仍可重新导入。
+    }
+    if (!saved) return;
+    const timer = window.setTimeout(() => setLocalOfficialPrompts(saved ?? {}), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
   const tabCounts = useMemo(
     () => Object.fromEntries(sourceTabs.map((tab) => [tab, prompts.filter((prompt) => prompt.tabs.includes(tab)).length])),
     [prompts],
+  );
+
+  const officialCount = useMemo(
+    () => prompts.filter((prompt) => prompt.officialPrompt || localOfficialPrompts[prompt.id]?.officialPrompt).length,
+    [localOfficialPrompts, prompts],
   );
 
   const results = useMemo(() => {
@@ -177,6 +221,7 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
     return prompts
       .filter((prompt) => {
         const matchesTab = !activeTab || prompt.tabs.includes(activeTab);
+        const localOfficial = localOfficialPrompts[prompt.id];
         const haystack = [
           prompt.title,
           prompt.category,
@@ -184,6 +229,10 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
           prompt.summary,
           prompt.scenario,
           prompt.tabs.join(" "),
+          prompt.officialPrompt,
+          prompt.officialPromptZh,
+          localOfficial?.officialPrompt,
+          localOfficial?.officialPromptZh,
           prompt.prompt,
           prompt.promptZh,
         ]
@@ -196,7 +245,7 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
         const right = sort === "category" ? `${b.category} ${b.title}` : b.title;
         return left.localeCompare(right, "zh-CN", { sensitivity: "base" });
       });
-  }, [activeTab, prompts, query, sort]);
+  }, [activeTab, localOfficialPrompts, prompts, query, sort]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -213,7 +262,7 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
 
   useEffect(() => {
     promptScrollRef.current?.scrollTo({ top: 0 });
-  }, [promptLanguage, selected?.id]);
+  }, [promptLayer, rewriteLanguage, selected?.id]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -226,12 +275,53 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
     if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current);
   }, []);
 
-  const handleCopy = async (prompt: PromptRecord, language: "en" | "zh") => {
-    const key = `${prompt.id}:${language}`;
-    const copied = await copyText(language === "zh" ? prompt.promptZh : prompt.prompt);
+  const handleCopy = async (key: string, text: string) => {
+    const copied = await copyText(text);
     setCopyStatus({ key, state: copied ? "success" : "error" });
     if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current);
     copyTimerRef.current = window.setTimeout(() => setCopyStatus(null), 1800);
+  };
+
+  const openPrompt = (prompt: PromptRecord) => {
+    setPromptLayer("official");
+    setImportOpen(false);
+    setImportOfficial("");
+    setImportTranslation("");
+    setCopyStatus(null);
+    setSelected(prompt);
+  };
+
+  const openImport = (prompt: PromptRecord) => {
+    const local = localOfficialPrompts[prompt.id];
+    setImportOfficial(local?.officialPrompt ?? prompt.officialPrompt ?? "");
+    setImportTranslation(local?.officialPromptZh ?? prompt.officialPromptZh ?? "");
+    setImportOpen(true);
+  };
+
+  const saveImport = (prompt: PromptRecord) => {
+    const officialPrompt = importOfficial.trim();
+    if (!officialPrompt) return;
+    const next = {
+      ...localOfficialPrompts,
+      [prompt.id]: {
+        officialPrompt,
+        officialPromptZh: importTranslation.trim(),
+        savedAt: new Date().toISOString(),
+      },
+    };
+    setLocalOfficialPrompts(next);
+    window.localStorage.setItem(localOfficialStorageKey, JSON.stringify(next));
+    setImportOpen(false);
+    setCopyStatus(null);
+  };
+
+  const removeImport = (prompt: PromptRecord) => {
+    const next = { ...localOfficialPrompts };
+    delete next[prompt.id];
+    setLocalOfficialPrompts(next);
+    window.localStorage.setItem(localOfficialStorageKey, JSON.stringify(next));
+    setImportOpen(false);
+    setCopyStatus(null);
   };
 
   const clearFilters = () => {
@@ -242,6 +332,22 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
   };
 
   const visible = results.slice(0, visibleCount);
+  const selectedLocalOfficial = selected ? localOfficialPrompts[selected.id] : undefined;
+  const selectedOfficialPrompt = selectedLocalOfficial?.officialPrompt ?? selected?.officialPrompt ?? "";
+  const selectedOfficialTranslation = selectedLocalOfficial?.officialPromptZh ?? selected?.officialPromptZh ?? "";
+  const activePromptText = !selected
+    ? ""
+    : promptLayer === "official"
+      ? selectedOfficialPrompt
+      : promptLayer === "translation"
+        ? selectedOfficialTranslation
+        : rewriteLanguage === "zh" ? selected.promptZh : selected.prompt;
+  const activePromptLanguage = promptLayer === "translation" || (promptLayer === "rewrite" && rewriteLanguage === "zh")
+    ? "zh"
+    : "en";
+  const activePromptKey = selected
+    ? `${selected.id}:${promptLayer}${promptLayer === "rewrite" ? `:${rewriteLanguage}` : ""}`
+    : "";
 
   return (
     <main className="app-shell">
@@ -261,16 +367,16 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
           <p className="eyebrow">FREE FRONTEND PROMPTS / CURATED LOCALLY</p>
           <h1>把灵感变成<br />可以直接开工的前端。</h1>
           <p className="hero-lede">
-            147 个原创等效提示词，覆盖站点、应用和组件。搜索、筛选、复制，然后交给你常用的 AI 编程工具。
+            147 个免费项目，按“官网原文、中文翻译、原创改写”分层呈现。没有导入的官网内容会明确留空，绝不再用改写内容代替。
           </p>
           <a className="hero-action" href="#library-title">
             开始浏览 <ChevronRight size={18} aria-hidden="true" />
           </a>
         </div>
         <div className="hero-stats" aria-label="资料库统计">
-          <div><strong>{prompts.length}</strong><span>免费提示词</span></div>
+          <div><strong>{prompts.length}</strong><span>免费项目</span></div>
+          <div><strong>{officialCount}</strong><span>官网原文已录入</span></div>
           <div><strong>18</strong><span>来源 Tab</span></div>
-          <div><strong>0</strong><span>付费内容</span></div>
         </div>
       </section>
 
@@ -359,7 +465,7 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
                     </div>
                     <h3>{prompt.title}</h3>
                     <p>{prompt.scenario}</p>
-                    <button type="button" className="open-button" onClick={() => setSelected(prompt)}>
+                    <button type="button" className="open-button" onClick={() => openPrompt(prompt)}>
                       查看提示词 <ArrowUpRight size={17} aria-hidden="true" />
                     </button>
                   </div>
@@ -388,7 +494,7 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
           <span className="brand-mark">PA</span>
           <strong>Prompt Atlas</strong>
         </div>
-        <p>本地优先 · 免费内容 · 原创等效提示词</p>
+        <p>本地优先 · 三层来源 · 未导入不冒充</p>
         <a href="#top">回到顶部 ↑</a>
       </footer>
 
@@ -408,6 +514,24 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
                 <span>{selected.category}</span>
                 <span>{selected.verifiedAt}</span>
               </div>
+              <div className={`official-status${selectedOfficialPrompt ? " available" : " missing"}`}>
+                <FileText size={16} aria-hidden="true" />
+                <div>
+                  <strong>{selectedOfficialPrompt ? "官网原文已录入" : "官网原文尚未导入"}</strong>
+                  <span>
+                    {selectedLocalOfficial
+                      ? "仅保存在当前浏览器"
+                      : selected.officialPrompt
+                        ? `用户提供并核对 · ${selected.officialVerifiedAt ?? selected.verifiedAt}`
+                        : "不会用原创改写内容代替"}
+                  </span>
+                </div>
+              </div>
+              {selectedLocalOfficial && (
+                <button className="manage-import-button" type="button" onClick={() => openImport(selected)}>
+                  <PenLine size={14} aria-hidden="true" /> 管理本地导入
+                </button>
+              )}
               <h2>{selected.title}</h2>
               <p>{selected.summary}</p>
               <div className="dialog-tabs">
@@ -420,18 +544,41 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
 
             <section className="dialog-content">
               <div className="dialog-toolbar">
-                <div className="dialog-title">
-                  <span>ORIGINAL EQUIVALENT PROMPT</span>
-                  <strong id="prompt-dialog-title">{promptLanguage === "zh" ? "原创中文提示词" : "原创英文提示词"}</strong>
+                <div className="dialog-heading-row">
+                  <div className="dialog-title">
+                    <span>{layerMeta[promptLayer].eyebrow}</span>
+                    <strong id="prompt-dialog-title">{layerMeta[promptLayer].title}</strong>
+                  </div>
+                  <button className="close-button" type="button" onClick={() => setSelected(null)} aria-label="关闭详情">
+                    <X size={20} aria-hidden="true" />
+                  </button>
                 </div>
-                <div className="dialog-controls">
-                  <div className="language-switch" role="group" aria-label="提示词语言">
+                <div className="dialog-action-row">
+                  <div className="layer-switch" role="group" aria-label="提示词内容层级">
+                    {(["official", "translation", "rewrite"] as const).map((layer) => (
+                      <button
+                        type="button"
+                        key={layer}
+                        className={promptLayer === layer ? "active" : ""}
+                        aria-pressed={promptLayer === layer}
+                        onClick={() => {
+                          setPromptLayer(layer);
+                          setImportOpen(false);
+                          setCopyStatus(null);
+                        }}
+                      >
+                        {layer === "official" ? "官网原文" : layer === "translation" ? "中文翻译" : "原创改写"}
+                      </button>
+                    ))}
+                  </div>
+                  {promptLayer === "rewrite" && (
+                    <div className="language-switch" role="group" aria-label="原创改写语言">
                     <button
                       type="button"
-                      className={promptLanguage === "en" ? "active" : ""}
-                      aria-pressed={promptLanguage === "en"}
+                      className={rewriteLanguage === "en" ? "active" : ""}
+                      aria-pressed={rewriteLanguage === "en"}
                       onClick={() => {
-                        setPromptLanguage("en");
+                        setRewriteLanguage("en");
                         setCopyStatus(null);
                       }}
                     >
@@ -439,46 +586,133 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
                     </button>
                     <button
                       type="button"
-                      className={promptLanguage === "zh" ? "active" : ""}
-                      aria-pressed={promptLanguage === "zh"}
+                      className={rewriteLanguage === "zh" ? "active" : ""}
+                      aria-pressed={rewriteLanguage === "zh"}
                       onClick={() => {
-                        setPromptLanguage("zh");
+                        setRewriteLanguage("zh");
                         setCopyStatus(null);
                       }}
                     >
                       中文
                     </button>
                   </div>
-                  <button className="copy-button" type="button" onClick={() => handleCopy(selected, promptLanguage)}>
-                    {copyStatus?.key === `${selected.id}:${promptLanguage}` && copyStatus.state === "success"
+                  )}
+                  <button
+                    className="copy-button"
+                    type="button"
+                    disabled={!activePromptText}
+                    onClick={() => handleCopy(activePromptKey, activePromptText)}
+                  >
+                    {copyStatus?.key === activePromptKey && copyStatus.state === "success"
                       ? <Check size={17} aria-hidden="true" />
                       : <Copy size={17} aria-hidden="true" />}
-                    {copyStatus?.key === `${selected.id}:${promptLanguage}`
+                    {copyStatus?.key === activePromptKey
                       ? copyStatus.state === "success" ? "已复制" : "复制失败"
-                      : "复制提示词"}
-                  </button>
-                  <button className="close-button" type="button" onClick={() => setSelected(null)} aria-label="关闭详情">
-                    <X size={20} aria-hidden="true" />
+                      : activePromptText ? "复制当前内容" : "暂无可复制内容"}
                   </button>
                 </div>
               </div>
-              <div
-                ref={promptScrollRef}
-                className={`prompt-scroll prompt-${promptLanguage}`}
-                role="region"
-                // 可聚焦的滚动区让键盘用户能够用方向键、PageDown 与 End 阅读全文。
-                // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
-                tabIndex={0}
-                aria-label={`${selected.title} ${promptLanguage === "zh" ? "中文" : "英文"}提示词全文，可上下滚动`}
-              >
-                <pre lang={promptLanguage === "zh" ? "zh-CN" : "en"}>
-                  <code>{promptLanguage === "zh" ? selected.promptZh : selected.prompt}</code>
-                </pre>
-                <p className="prompt-end">已显示完整提示词 · {promptLanguage === "zh" ? "中文" : "ENGLISH"}</p>
-              </div>
+              {importOpen ? (
+                <div
+                  ref={promptScrollRef}
+                  className="prompt-scroll prompt-empty"
+                  role="region"
+                  // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
+                  tabIndex={0}
+                  aria-label={`${selected.title} 本地导入管理`}
+                >
+                  <div className="official-empty official-editor">
+                    <PenLine size={28} aria-hidden="true" />
+                    <span>LOCAL IMPORT</span>
+                    <h3>管理本地导入</h3>
+                    <p>粘贴你通过官网免费 Copy 流程获得的内容。保存后，官网原文与中文翻译仍会作为两个独立层显示。</p>
+                    <form
+                      className="official-import"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        saveImport(selected);
+                      }}
+                    >
+                      <label>
+                        <span>官网 Full Prompt</span>
+                        <textarea
+                          required
+                          value={importOfficial}
+                          onChange={(event) => setImportOfficial(event.target.value)}
+                          placeholder="粘贴从官网免费 Copy full prompt 获得的完整原文…"
+                        />
+                      </label>
+                      <label>
+                        <span>完整中文翻译（可稍后补充）</span>
+                        <textarea
+                          value={importTranslation}
+                          onChange={(event) => setImportTranslation(event.target.value)}
+                          placeholder="粘贴与官网原文对应的中文翻译…"
+                        />
+                      </label>
+                      <small>内容仅写入当前浏览器的 localStorage，不上传、不写入 GitHub。</small>
+                      <div className="official-import-actions">
+                        <button type="submit" disabled={!importOfficial.trim()}>
+                          <Save size={15} aria-hidden="true" /> 保存到当前浏览器
+                        </button>
+                        {selectedLocalOfficial && (
+                          <button className="danger" type="button" onClick={() => removeImport(selected)}>
+                            <Trash2 size={15} aria-hidden="true" /> 删除本地内容
+                          </button>
+                        )}
+                        <button className="quiet" type="button" onClick={() => setImportOpen(false)}>取消</button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+              ) : activePromptText ? (
+                <div
+                  ref={promptScrollRef}
+                  className={`prompt-scroll prompt-${activePromptLanguage}`}
+                  role="region"
+                  // 可聚焦的滚动区让键盘用户能够用方向键、PageDown 与 End 阅读全文。
+                  // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
+                  tabIndex={0}
+                  aria-label={`${selected.title} ${layerMeta[promptLayer].title}全文，可上下滚动`}
+                >
+                  <pre lang={activePromptLanguage === "zh" ? "zh-CN" : "en"}>
+                    <code>{activePromptText}</code>
+                  </pre>
+                  <p className="prompt-end">已显示完整内容 · {layerMeta[promptLayer].end}</p>
+                </div>
+              ) : (
+                <div
+                  ref={promptScrollRef}
+                  className="prompt-scroll prompt-empty"
+                  role="region"
+                  // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
+                  tabIndex={0}
+                  aria-label={`${selected.title} ${layerMeta[promptLayer].title}导入状态`}
+                >
+                  <div className="official-empty">
+                    {promptLayer === "translation" ? <Languages size={28} aria-hidden="true" /> : <FileText size={28} aria-hidden="true" />}
+                    <span>{promptLayer === "translation" ? "TRANSLATION NOT IMPORTED" : "OFFICIAL SOURCE NOT IMPORTED"}</span>
+                    <h3>{promptLayer === "translation" ? "中文翻译尚未录入" : "官网原文尚未导入"}</h3>
+                    <p>
+                      {promptLayer === "translation"
+                        ? "先导入通过官网 Copy full prompt 获得的原文，再录入对应的完整中文翻译。"
+                        : "打开来源页面，使用公开的 Copy full prompt，然后粘贴到本地导入区。未导入时不会显示原创改写来冒充官网内容。"}
+                    </p>
+                    <div className="official-empty-actions">
+                      <a href={selected.sourceUrl} target="_blank" rel="noreferrer">
+                        打开来源页面 <ExternalLink size={15} aria-hidden="true" />
+                      </a>
+                      <button type="button" onClick={() => openImport(selected)}>
+                        <PenLine size={15} aria-hidden="true" /> 本地导入
+                      </button>
+                    </div>
+
+                  </div>
+                </div>
+              )}
               <span className="copy-status" role="status" aria-live="polite">
-                {copyStatus?.key === `${selected.id}:${promptLanguage}`
-                  ? copyStatus.state === "success" ? "提示词已复制到剪贴板" : "复制失败，请选择文本后手动复制"
+                {copyStatus?.key === activePromptKey
+                  ? copyStatus.state === "success" ? "当前层内容已复制到剪贴板" : "复制失败，请选择文本后手动复制"
                   : ""}
               </span>
             </section>

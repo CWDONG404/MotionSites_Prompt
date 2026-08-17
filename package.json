@@ -7,10 +7,12 @@
   },
   "scripts": {
     "prepare:data": "node scripts/prepare-prompts.mjs",
+    "rewrite:prompts": "node scripts/rewrite-prompt-corpus.mjs && npm run prepare:data",
+    "audit:prompts": "node scripts/audit-prompt-diversity.mjs",
     "dev": "vinext dev",
     "build": "vinext build",
     "start": "vinext start",
-    "test": "npm run build && node --test tests/rendered-html.test.mjs",
+    "test": "npm run build && npm run audit:prompts && node --test tests/rendered-html.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
   },
   "dependencies": {

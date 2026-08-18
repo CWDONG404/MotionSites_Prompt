@@ -7,10 +7,13 @@
   },
   "scripts": {
     "prepare:data": "node scripts/prepare-prompts.mjs",
-    "rewrite:prompts": "node scripts/rewrite-prompt-corpus.mjs && npm run prepare:data",
+    "sync:official": "node scripts/sync-official-prompts.mjs",
+    "audit:official:complete": "node scripts/sync-official-prompts.mjs --require-complete",
+    "sync:data": "npm run prepare:data && npm run sync:official",
+    "rewrite:prompts": "node scripts/rewrite-prompt-corpus.mjs && npm run sync:data",
     "audit:prompts": "node scripts/audit-prompt-diversity.mjs",
-    "dev": "vinext dev",
-    "build": "vinext build",
+    "dev": "npm run sync:official && vinext dev",
+    "build": "npm run sync:official && vinext build",
     "start": "vinext start",
     "test": "npm run build && npm run audit:prompts && node --test tests/rendered-html.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"

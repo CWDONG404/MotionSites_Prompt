@@ -87,12 +87,9 @@ function parseFrontmatter(raw) {
   return { meta, body: raw.slice(match[0].length) };
 }
 
-function section(body, title, nextTitle) {
-  const start = body.indexOf(`## ${title}`);
-  if (start < 0) return "";
-  const contentStart = start + `## ${title}`.length;
-  const end = nextTitle ? body.indexOf(`## ${nextTitle}`, contentStart) : body.length;
-  return body.slice(contentStart, end < 0 ? body.length : end).trim();
+function section(body, title) {
+  const escapedTitle = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return body.match(new RegExp(`^## ${escapedTitle}\\s*\\r?\\n([\\s\\S]*?)(?=^## |\\s*$)`, "m"))?.[1]?.trim() ?? "";
 }
 
 function promptBlock(body, heading) {
@@ -108,12 +105,8 @@ for (const file of files) {
   if (meta.free !== true) continue;
   const prompt = promptBlock(body, "原创英文提示词");
   const promptZh = promptBlock(body, "原创中文提示词");
-  const officialPrompt = promptBlock(body, "官网原文");
-  const officialPromptZh = promptBlock(body, "官方原文中文翻译");
   if (!prompt) throw new Error(`${file} 缺少原创英文提示词`);
   if (!promptZh) throw new Error(`${file} 缺少原创中文提示词`);
-  if (officialPrompt && !officialPromptZh) throw new Error(`${file} 已收录官网原文但缺少完整中文翻译`);
-  const scenario = section(body, "适用场景", officialPrompt ? "官网原文" : "原创英文提示词");
   const preview = resolvePreview(meta);
   records.push({
     id: meta.id,
@@ -124,13 +117,8 @@ for (const file of files) {
     sourceUrl: meta.source_url,
     ...preview,
     verifiedAt: meta.verified_at,
-    summary: section(body, "模板概述", "适用场景"),
-    scenario,
-    officialPrompt: officialPrompt || null,
-    officialPromptZh: officialPromptZh || null,
-    officialStatus: officialPrompt ? (meta.official_prompt_status ?? "verified") : "not-imported",
-    officialVerifiedAt: officialPrompt ? (meta.official_prompt_verified_at ?? meta.verified_at) : null,
-    officialProvenance: officialPrompt ? (meta.official_prompt_provenance ?? "user-provided") : null,
+    summary: section(body, "模板概述"),
+    scenario: section(body, "适用场景"),
     prompt,
     promptZh,
   });
@@ -150,11 +138,6 @@ const output = `export type PromptRecord = {
   verifiedAt: string;
   summary: string;
   scenario: string;
-  officialPrompt: string | null;
-  officialPromptZh: string | null;
-  officialStatus: "user-provided-verified" | "verified" | "not-imported";
-  officialVerifiedAt: string | null;
-  officialProvenance: string | null;
   prompt: string;
   promptZh: string;
 };

@@ -38,3 +38,9 @@ yarn-error.log*
 /.wrangler/
 /outputs/
 /work/
+
+# 用户通过官网 Copy 流程取得的 Full Prompt 只保存在本机。
+/data/official-prompts/*
+!/data/official-prompts/README.md
+!/data/official-prompts/prompt.md.example
+/public/data/official-prompts.local.json

@@ -21,10 +21,27 @@ import type { PromptRecord } from "./prompt-data";
 
 type PromptLayer = "official" | "translation" | "rewrite";
 type RewriteLanguage = "en" | "zh";
-type LocalOfficialPrompt = {
+type OfficialPromptContent = {
   officialPrompt: string;
   officialPromptZh: string;
+};
+type LocalOfficialPrompt = OfficialPromptContent & {
   savedAt: string;
+};
+type SyncedOfficialPrompt = OfficialPromptContent & {
+  id: string;
+  sourceUrl: string;
+  capturedAt: string | null;
+  provenance: string;
+  sha256: string;
+  translationSha256: string | null;
+};
+type OfficialPromptManifest = {
+  schemaVersion: number;
+  catalogCount: number;
+  officialCount: number;
+  translatedCount: number;
+  entries: SyncedOfficialPrompt[];
 };
 
 const localOfficialStorageKey = "prompt-atlas:official-prompts:v1";
@@ -155,23 +172,28 @@ function Preview({ prompt, priority = false, detail = false }: { prompt: PromptR
 }
 
 async function copyText(text: string) {
+  let fallbackCopied = false;
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.readOnly = true;
+  textarea.tabIndex = -1;
+  textarea.setAttribute("aria-hidden", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.setSelectionRange(0, textarea.value.length);
+  try {
+    fallbackCopied = document.execCommand("copy");
+  } finally {
+    textarea.remove();
+  }
+
   try {
     await navigator.clipboard.writeText(text);
     return true;
   } catch {
-    const textarea = document.createElement("textarea");
-    textarea.value = text;
-    textarea.readOnly = true;
-    textarea.tabIndex = -1;
-    textarea.setAttribute("aria-hidden", "true");
-    textarea.style.position = "fixed";
-    textarea.style.opacity = "0";
-    document.body.appendChild(textarea);
-    textarea.focus();
-    textarea.setSelectionRange(0, textarea.value.length);
-    const copied = document.execCommand("copy");
-    textarea.remove();
-    return copied;
+    return fallbackCopied;
   }
 }
 
@@ -184,6 +206,8 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
   const [promptLayer, setPromptLayer] = useState<PromptLayer>("official");
   const [rewriteLanguage, setRewriteLanguage] = useState<RewriteLanguage>("en");
   const [localOfficialPrompts, setLocalOfficialPrompts] = useState<Record<string, LocalOfficialPrompt>>({});
+  const [syncedOfficialPrompts, setSyncedOfficialPrompts] = useState<Record<string, SyncedOfficialPrompt>>({});
+  const [officialSyncState, setOfficialSyncState] = useState<"loading" | "ready" | "missing" | "error">("loading");
   const [importOpen, setImportOpen] = useState(false);
   const [importOfficial, setImportOfficial] = useState("");
   const [importTranslation, setImportTranslation] = useState("");
@@ -206,14 +230,48 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
     return () => window.clearTimeout(timer);
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      try {
+        const response = await fetch("/data/official-prompts.local.json", { cache: "no-store" });
+        if (response.status === 404) {
+          if (active) setOfficialSyncState("missing");
+          return;
+        }
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const manifest = await response.json() as OfficialPromptManifest;
+        if (manifest.schemaVersion !== 1 || manifest.catalogCount !== prompts.length || !Array.isArray(manifest.entries)) {
+          throw new Error("本地官网原文清单格式不匹配");
+        }
+        const knownIds = new Set(prompts.map((prompt) => prompt.id));
+        const entries = Object.fromEntries(
+          manifest.entries
+            .filter((entry) => knownIds.has(entry.id) && entry.officialPrompt)
+            .map((entry) => [entry.id, entry]),
+        );
+        if (active) {
+          setSyncedOfficialPrompts(entries);
+          setOfficialSyncState("ready");
+        }
+      } catch {
+        if (active) setOfficialSyncState("error");
+      }
+    };
+    void load();
+    return () => {
+      active = false;
+    };
+  }, [prompts]);
+
   const tabCounts = useMemo(
     () => Object.fromEntries(sourceTabs.map((tab) => [tab, prompts.filter((prompt) => prompt.tabs.includes(tab)).length])),
     [prompts],
   );
 
   const officialCount = useMemo(
-    () => prompts.filter((prompt) => prompt.officialPrompt || localOfficialPrompts[prompt.id]?.officialPrompt).length,
-    [localOfficialPrompts, prompts],
+    () => prompts.filter((prompt) => localOfficialPrompts[prompt.id]?.officialPrompt || syncedOfficialPrompts[prompt.id]?.officialPrompt).length,
+    [localOfficialPrompts, prompts, syncedOfficialPrompts],
   );
 
   const results = useMemo(() => {
@@ -222,6 +280,7 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
       .filter((prompt) => {
         const matchesTab = !activeTab || prompt.tabs.includes(activeTab);
         const localOfficial = localOfficialPrompts[prompt.id];
+        const syncedOfficial = syncedOfficialPrompts[prompt.id];
         const haystack = [
           prompt.title,
           prompt.category,
@@ -229,8 +288,8 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
           prompt.summary,
           prompt.scenario,
           prompt.tabs.join(" "),
-          prompt.officialPrompt,
-          prompt.officialPromptZh,
+          syncedOfficial?.officialPrompt,
+          syncedOfficial?.officialPromptZh,
           localOfficial?.officialPrompt,
           localOfficial?.officialPromptZh,
           prompt.prompt,
@@ -245,7 +304,7 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
         const right = sort === "category" ? `${b.category} ${b.title}` : b.title;
         return left.localeCompare(right, "zh-CN", { sensitivity: "base" });
       });
-  }, [activeTab, localOfficialPrompts, prompts, query, sort]);
+  }, [activeTab, localOfficialPrompts, prompts, query, sort, syncedOfficialPrompts]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -293,8 +352,9 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
 
   const openImport = (prompt: PromptRecord) => {
     const local = localOfficialPrompts[prompt.id];
-    setImportOfficial(local?.officialPrompt ?? prompt.officialPrompt ?? "");
-    setImportTranslation(local?.officialPromptZh ?? prompt.officialPromptZh ?? "");
+    const synced = syncedOfficialPrompts[prompt.id];
+    setImportOfficial(local?.officialPrompt ?? synced?.officialPrompt ?? "");
+    setImportTranslation(local?.officialPromptZh ?? synced?.officialPromptZh ?? "");
     setImportOpen(true);
   };
 
@@ -333,8 +393,9 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
 
   const visible = results.slice(0, visibleCount);
   const selectedLocalOfficial = selected ? localOfficialPrompts[selected.id] : undefined;
-  const selectedOfficialPrompt = selectedLocalOfficial?.officialPrompt ?? selected?.officialPrompt ?? "";
-  const selectedOfficialTranslation = selectedLocalOfficial?.officialPromptZh ?? selected?.officialPromptZh ?? "";
+  const selectedSyncedOfficial = selected ? syncedOfficialPrompts[selected.id] : undefined;
+  const selectedOfficialPrompt = selectedLocalOfficial?.officialPrompt ?? selectedSyncedOfficial?.officialPrompt ?? "";
+  const selectedOfficialTranslation = selectedLocalOfficial?.officialPromptZh ?? selectedSyncedOfficial?.officialPromptZh ?? "";
   const activePromptText = !selected
     ? ""
     : promptLayer === "official"
@@ -358,7 +419,9 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
         </a>
         <div className="masthead-actions">
           <a href="#library-title">浏览资料库</a>
-          <span className="local-badge">LOCAL LIBRARY · 2026</span>
+          <span className="local-badge" title={officialSyncState === "error" ? "本地原文清单读取失败" : undefined}>
+            LOCAL FULL PROMPTS · {officialCount}/{prompts.length}
+          </span>
         </div>
       </header>
 
@@ -520,16 +583,18 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
                   <strong>{selectedOfficialPrompt ? "官网原文已录入" : "官网原文尚未导入"}</strong>
                   <span>
                     {selectedLocalOfficial
-                      ? "仅保存在当前浏览器"
-                      : selected.officialPrompt
-                        ? `用户提供并核对 · ${selected.officialVerifiedAt ?? selected.verifiedAt}`
-                        : "不会用原创改写内容代替"}
+                      ? "当前浏览器手动导入（优先于本地文件）"
+                      : selectedSyncedOfficial
+                        ? `本地原文库已同步${selectedSyncedOfficial.capturedAt ? ` · ${selectedSyncedOfficial.capturedAt}` : ""}`
+                        : officialSyncState === "error"
+                          ? "本地原文清单读取失败，请重新运行 npm run sync:official"
+                          : "不会用原创改写内容代替"}
                   </span>
                 </div>
               </div>
-              {selectedLocalOfficial && (
+              {(selectedLocalOfficial || selectedSyncedOfficial) && (
                 <button className="manage-import-button" type="button" onClick={() => openImport(selected)}>
-                  <PenLine size={14} aria-hidden="true" /> 管理本地导入
+                  <PenLine size={14} aria-hidden="true" /> {selectedLocalOfficial ? "管理浏览器导入" : "用浏览器内容覆盖"}
                 </button>
               )}
               <h2>{selected.title}</h2>
@@ -650,7 +715,7 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
                           placeholder="粘贴与官网原文对应的中文翻译…"
                         />
                       </label>
-                      <small>内容仅写入当前浏览器的 localStorage，不上传、不写入 GitHub。</small>
+                      <small>此处保存的内容只写入当前浏览器，并优先于本地原文文件；不会上传，也不会写入 GitHub。</small>
                       <div className="official-import-actions">
                         <button type="submit" disabled={!importOfficial.trim()}>
                           <Save size={15} aria-hidden="true" /> 保存到当前浏览器
@@ -696,7 +761,7 @@ export function PromptLibrary({ prompts }: { prompts: PromptRecord[] }) {
                     <p>
                       {promptLayer === "translation"
                         ? "先导入通过官网 Copy full prompt 获得的原文，再录入对应的完整中文翻译。"
-                        : "打开来源页面，使用公开的 Copy full prompt，然后粘贴到本地导入区。未导入时不会显示原创改写来冒充官网内容。"}
+                        : "打开来源页面，使用公开的 Copy full prompt，再保存到 data/official-prompts 并运行 npm run sync:official；也可以临时粘贴到浏览器导入区。未导入时不会显示原创改写来冒充官网内容。"}
                     </p>
                     <div className="official-empty-actions">
                       <a href={selected.sourceUrl} target="_blank" rel="noreferrer">
